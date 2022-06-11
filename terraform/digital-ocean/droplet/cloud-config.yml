@@ -1,0 +1,116 @@
+# https://cloudinit.readthedocs.io/en/latest/index.html
+
+users:
+  - name: ${droplet_user}
+    ssh-authorized-keys:
+      - ${ssh_public_key}
+    sudo: [ 'ALL=(ALL) NOPASSWD:ALL' ]
+    groups: sudo
+    shell: /bin/bash
+
+write_files:
+  - path: /etc/ssh/sshd_config
+    content: |
+      Port 4444
+      Protocol 2
+      HostKey /etc/ssh/ssh_host_rsa_key
+      HostKey /etc/ssh/ssh_host_dsa_key
+      HostKey /etc/ssh/ssh_host_ecdsa_key
+      HostKey /etc/ssh/ssh_host_ed25519_key
+      UsePrivilegeSeparation yes
+      KeyRegenerationInterval 3600
+      ServerKeyBits 1024
+      SyslogFacility AUTH
+      LogLevel INFO
+      LoginGraceTime 120
+      PermitRootLogin no
+      StrictModes yes
+      RSAAuthentication yes
+      PubkeyAuthentication yes
+      IgnoreRhosts yes
+      RhostsRSAAuthentication no
+      HostbasedAuthentication no
+      PermitEmptyPasswords no
+      ChallengeResponseAuthentication no
+      X11Forwarding yes
+      X11DisplayOffset 10
+      PrintMotd no
+      PrintLastLog yes
+      TCPKeepAlive yes
+      AcceptEnv LANG LC_*
+      Subsystem sftp /usr/lib/openssh/sftp-server
+      UsePAM yes
+      AllowUsers ${droplet_user}
+  - path: /home/${droplet_user}/.config/rclone/${service_account_file_name}
+    content: |
+      {
+        "type": "${service_account_type}",
+        "project_id": "${service_account_project_id}",
+        "private_key_id": "${service_account_private_key_id}",
+        "private_key": "${service_account_private_key}",
+        "client_email": "${service_account_client_email}",
+        "client_id": "${service_account_client_id}",
+        "auth_uri": "${service_account_auth_uri}",
+        "token_uri": "${service_account_token_uri}",
+        "auth_provider_x509_cert_url": "${service_account_auth_provider_x509_cert_url}",
+        "client_x509_cert_url": "${service_account_client_x509_cert_url}"
+      }
+    permissions: 600
+  - path: /home/${droplet_user}/.config/rclone/rclone.conf
+    content: |
+      [google_drive]
+      type = drive
+      client_id = ${oauth_client_id}
+      client_secret = ${oauth_client_secret}
+      scope = drive.readonly
+      root_folder_id = ${root_folder_id}
+      service_account_file = /home/${droplet_user}/.config/rclone/${service_account_file_name}
+      team_drive =
+  - path: /etc/nginx/conf.d/plex.conf
+    content: |
+      server {
+        listen 80;
+        server_name ${domain};
+
+        location / {
+          proxy_pass http://127.0.0.1:32400;
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+          #upgrade to WebSocket protocol when requested
+          proxy_set_header Upgrade $http_upgrade;
+          proxy_set_header Connection "Upgrade";
+        }
+      }
+
+runcmd:
+  - mkdir /media
+  - mkdir /media/music
+  - mkdir /home/${droplet_user}/.config
+  - mkdir /home/${droplet_user}/.config/rclone
+  - echo "Downloading Plex installation file"
+  - wget https://downloads.plex.tv/plex-media-server-new/1.25.5.5492-12f6b8c83/debian/plexmediaserver_1.25.5.5492-12f6b8c83_amd64.deb
+  - echo "Installing Plex from plexmediaserver_1.25.5.5492-12f6b8c83_amd64.deb"
+  - sudo dpkg -i plexmediaserver_1.25.5.5492-12f6b8c83_amd64.deb
+  - systemctl status plexmediaserver
+  - sudo apt install -y nginx
+  - sudo nginx -t
+  - sudo systemctl reload nginx
+  - echo "Installing rclone"
+  - curl https://rclone.org/install.sh | sudo bash
+  - rclone --version
+  - "rclone mount google_drive: /media/music -vv --config /home/${droplet_user}/.config/rclone/rclone.conf --daemon --allow-other"
+  - echo "Setting up cert for domain. Remove next few steps if you don't have a domain to set up"
+  - sudo apt install -y certbot
+  - sudo apt install -y python3-certbot-nginx
+  - sudo certbot --nginx --agree-tos --redirect --hsts --staple-ocsp --email ${email} -d ${domain}
+  - echo "Done setting up cert"
+  - usermod -aG ${droplet_user} plex
+  - sudo chown ${droplet_user}:${droplet_user} /media
+  - sudo chown ${droplet_user}:${droplet_user} /media/music
+  - sudo chmod 775 /media/music
+  - sudo setfacl -m g:${droplet_user}:rwx /media/music
+  - sudo service plexmediaserver restart
+
+final_message: "The system is finally up, after $UPTIME seconds"
